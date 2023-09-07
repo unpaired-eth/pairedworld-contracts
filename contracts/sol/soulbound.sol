@@ -6,6 +6,22 @@ import "@openzeppelin/contracts/utils/Counters.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/Strings.sol";
+
+interface PairedWorldRDFInterface {
+    
+    function addSPO(uint256 tokenId, uint8 predicateIdx, uint8 objectIdx, string memory object) external;
+    function removeRDF(uint256 tokenId) external;
+    function rdfOf(uint256 tokenId) external view returns (string memory);
+
+}
+
+interface TicketAwardInterface {
+    
+    function calculateAward(uint256 amount, uint8 level) external returns (uint256);
+    
+}
+
 
 contract SoulBoundToken is ERC1155, Ownable, ReentrancyGuard {
     using Counters for Counters.Counter;
@@ -20,16 +36,21 @@ contract SoulBoundToken is ERC1155, Ownable, ReentrancyGuard {
     mapping (address => uint256) public _ownedToken;
 
     mapping (uint256 => uint8) public _tokenLevels;
-    uint256 public _multiplierAlpha = 100;
     address public _admin;
     address public _burner;
+    PairedWorldRDFInterface public _rdfContract;
+    TicketAwardInterface public _ticketAwardFunction;
     
     bytes32 public _whitelist;
+
+    bool public _useRdfMetadatURI = false;
+    string public _baseURI;
 
     event WhitelistUpdated(bytes32 merkle_root);
     event LevelChanged(uint256 indexed tokenId, uint256 level);
 
-    constructor() ERC1155("SOUL") {}
+    constructor() ERC1155("SOUL") {
+    }
 
     modifier onlyAdmin() {
         require(msg.sender == _admin || msg.sender == owner(), "Only Admin");
@@ -50,21 +71,34 @@ contract SoulBoundToken is ERC1155, Ownable, ReentrancyGuard {
         _burner = burner;
     }
 
+    function setRdfContract(address rdf) external onlyOwner {
+        _rdfContract = PairedWorldRDFInterface(rdf);
+    }
+
+    function setTicketAwardContract(address ticketAward) external onlyOwner {
+        _ticketAwardFunction = TicketAwardInterface(ticketAward);
+    }
+
     function setTokenURI(uint8 level, string memory _tokenURI) external onlyOwner {
         _tokenURIs[level] = _tokenURI;
     }
 
-    function setMultiplierAlpha(uint256 alpha) external onlyOwner {
-        _multiplierAlpha = alpha;
+    function setBaseURI(string memory baseURI) external onlyOwner {
+        _baseURI = baseURI;
     }
 
     // MARK: - Only Burner
     function burn(uint256 tokenId, uint256 amount) external onlyBurner {
+        uint256 ownerBalance = balanceOf(_ownerOf[tokenId], tokenId);
         _burn(_ownerOf[tokenId], tokenId, amount);
-        delete _tokenLevels[tokenId];
-        delete _ownedToken[_ownerOf[tokenId]];
-        delete _ownerOf[tokenId];
+        if (amount == ownerBalance) {
+            delete _tokenLevels[tokenId];
+            delete _ownedToken[_ownerOf[tokenId]];
+            delete _ownerOf[tokenId];
+            _rdfContract.removeRDF(tokenId);
+        } 
     }
+        
 
     // MARK: - Only Admin
     function updateWhitelist(bytes32 merkle_root) external onlyAdmin {
@@ -82,11 +116,11 @@ contract SoulBoundToken is ERC1155, Ownable, ReentrancyGuard {
             tokenId = totalSupply.current();
             _ownerOf[tokenId] = msg.sender;
             _ownedToken[msg.sender] = tokenId;
+            _rdfContract.addSPO(tokenId, 1, 1, Strings.toHexString(msg.sender));
         } 
         
         uint256 delta = amount - balanceOf(msg.sender, _ownedToken[msg.sender]);
         _tokenLevels[tokenId] = level;
-
         _mint(msg.sender, tokenId, delta, "");
     }
 
@@ -94,10 +128,6 @@ contract SoulBoundToken is ERC1155, Ownable, ReentrancyGuard {
         require(whitelisted(proof, msg.sender, balanceOf(msg.sender, _ownedToken[msg.sender]), _toLevel) > 0, "trying to change to invalid level");
         _tokenLevels[_tokenId] = _toLevel;
         emit LevelChanged(_tokenId, _toLevel);
-    }
-
-    function tokenLevel(uint8 tokenId) external view returns (uint256) {
-        return _tokenLevels[tokenId];
     }
 
     function ownerTickets(
@@ -110,7 +140,7 @@ contract SoulBoundToken is ERC1155, Ownable, ReentrancyGuard {
         require(whitelisted(proof, account, amount, level) > 0, "You are not whitelisted to mint tokens.");
         _tokenLevels[tokenId] = level;
 
-        return level + (_multiplierAlpha * amount * level / 100) - (_multiplierAlpha * level / 100);
+        return _ticketAwardFunction.calculateAward(amount, level);
     }
 
     function ownerOf(uint256 tokenID) public view returns (address) {
@@ -118,6 +148,9 @@ contract SoulBoundToken is ERC1155, Ownable, ReentrancyGuard {
     }
 
     function uri(uint256 tokenId) public view virtual override returns (string memory) {
+        if (_useRdfMetadatURI) {
+            return string(abi.encodePacked(_baseURI, Strings.toString(tokenId)));
+        }
         return _tokenURIs[_tokenLevels[tokenId]];
     }
 
@@ -132,6 +165,16 @@ contract SoulBoundToken is ERC1155, Ownable, ReentrancyGuard {
         uint256 val = MerkleProof.verify(proof, _whitelist, leaf) ? amount : 0;
 
         return val;
+    }
+    
+    // MARK: - RDF
+    function addSPO(uint256 tokenId, uint8 predicateIdx, uint8 objectIdx, string memory object) external {
+        require(msg.sender == _ownerOf[tokenId], "Only owner can add RDF");
+        _rdfContract.addSPO(tokenId, predicateIdx, objectIdx, object);
+    }
+
+    function rdfOf(uint256 tokenId) external view returns (string memory) {
+        return _rdfContract.rdfOf(tokenId);
     }
 
     // MARK: - Private 
