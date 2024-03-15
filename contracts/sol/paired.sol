@@ -16,7 +16,7 @@ contract Paired is ERC20, ReentrancyGuard, Ownable {
     uint256 public _lastMint;
     
     // amount made available for claiming
-    uint256 public _activeSupply = 100_000_000 * (10**decimals()); // 100 million
+    uint256 public _activeSupply = 1_000_000_000 * (10**decimals()); // 1 billion
     uint256 public _max_inflation_pct = 372908894; // 0.372908894%
     uint256[9] public _inflation_options = [
         249067931, // 1% YoY - 0.1249% QoQ
